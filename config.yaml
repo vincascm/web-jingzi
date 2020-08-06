@@ -1,4 +1,5 @@
 listen_address: 127.0.0.1:3003
 domain_name:
-  x.com: https://www.google.com
+  x.com: zh.wikipedia.org
+  #x.com: www.google.com
   #x.com: 127.0.0.1:8899

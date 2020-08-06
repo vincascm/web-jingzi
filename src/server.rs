@@ -96,7 +96,7 @@ impl TryFrom<&str> for Target {
         let s = if s.find("://").is_some() {
             s.to_string()
         } else {
-            format!("http://{}", s)
+            format!("https://{}", s)
         };
         let url: Url = s.parse()?;
         let host = url.host_str().ok_or(anyhow!("invalid domain"))?;
@@ -156,16 +156,27 @@ impl<'a> Forward<'a> {
             s => return response(500, &format!("unsupported scheme: {}", s)),
         };
 
-        if let Some(cookie) = resp.header_mut("set-cookie") {
+        if let Some(location) = resp.header("location") {
+            let mut location = location.as_str().to_string();
+            for (k, v) in &self.domain {
+                location = location.replace(&v.host_with_port(), k);
+            }
+            resp.insert_header("location", location);
+        }
+
+        if let Some(cookie) = resp.header("set-cookie") {
             let cookie: Vec<_> = cookie
                 .iter()
                 .map(|i| {
                     let i = i.as_str();
                     let i: Vec<_> = i
-                        .split("; ")
-                        .filter(|i| !i.starts_with("domain="))
+                        .split(';')
+                        .filter(|i| {
+                            let i = i.trim_start();
+                            !(i.len() > 7 && i[..7].to_lowercase() == "domain=")
+                        })
                         .collect();
-                    let i = i.join("; ");
+                    let i = i.join(";");
                     unsafe { HeaderValue::from_bytes_unchecked(i.as_bytes().to_vec()) }
                 })
                 .collect();
@@ -185,9 +196,6 @@ impl<'a> Forward<'a> {
                 _ => (),
             }
         }
-        //for i in resp.iter() {
-        //dbg!(i);
-        //}
 
         // replace domain
         if let Some(content_type) = resp.content_type() {
@@ -218,6 +226,9 @@ impl<'a> Forward<'a> {
                 _ => (),
             }
         }
+        //for i in resp.iter() {
+        //dbg!(i);
+        //}
         Ok(resp)
     }
 }
