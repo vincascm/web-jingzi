@@ -26,4 +26,4 @@ features = ["derive"]
 
 [dependencies.async-compression]
 version = "0.3.5"
-features = ["brotli", "gzip", "futures-io"]
+features = ["brotli", "deflate", "gzip", "futures-io"]

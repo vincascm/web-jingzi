@@ -5,42 +5,15 @@ use std::{
 };
 
 use anyhow::{anyhow, Error, Result};
+use async_compression::futures::bufread::{
+    BrotliDecoder, BrotliEncoder, DeflateDecoder, DeflateEncoder, GzipDecoder, GzipEncoder,
+};
 use http_types::{
     headers::HeaderValue, Body, Error as HttpError, Request, Response, StatusCode, Url,
 };
-use smol::{Async, Task};
+use smol::{io::AsyncRead, Async, Task};
 
 use crate::constants::{CONFIG, FORWARD};
-
-async fn serve(req: Request) -> http_types::Result<Response> {
-    FORWARD.forward(req).await
-}
-
-pub fn run() -> Result<()> {
-    smol::run(async {
-        let addr: SocketAddr = CONFIG.listen_address.as_str().parse()?;
-        let listener = Async::<TcpListener>::bind(addr)?;
-        loop {
-            let (stream, _) = listener.accept().await?;
-            let stream = async_dup::Arc::new(stream);
-            let task = Task::spawn(async move {
-                if let Err(err) = async_h1::accept(stream, serve).await {
-                    error!("Connection error: {:#?}", err);
-                }
-            });
-
-            task.detach();
-        }
-    })
-}
-
-fn response(code: u16, message: &str) -> http_types::Result<Response> {
-    let code: StatusCode = code.try_into()?;
-    let mut resp = Response::new(code);
-    resp.set_content_type("text/plain".parse()?);
-    resp.set_body(message);
-    Ok(resp)
-}
 
 struct Target {
     scheme: String,
@@ -157,7 +130,7 @@ impl<'a> Forward<'a> {
             Some(server) => {
                 socks5::connect_without_auth(
                     resolve(server).await?,
-                    (target.host().to_string(), target.port()).into(),
+                    (host.to_string(), target.port()).into(),
                 )
                 .await?
             }
@@ -180,6 +153,14 @@ impl<'a> Forward<'a> {
             resp.insert_header("location", location);
         }
 
+        if let Some(referer) = resp.header("referer") {
+            let mut referer = referer.as_str().to_string();
+            for (k, v) in &self.domain {
+                referer = referer.replace(&v.host_with_port(), k);
+            }
+            resp.insert_header("referer", referer);
+        }
+
         if let Some(cookie) = resp.header("set-cookie") {
             let cookie: Vec<_> = cookie
                 .iter()
@@ -199,22 +180,24 @@ impl<'a> Forward<'a> {
             resp.insert_header("set-cookie", cookie.as_slice());
         }
 
+        if resp.status() == StatusCode::NotModified {
+            return Ok(resp);
+        }
+
         if let Some(encoding) = resp.header("content-encoding") {
             let encoding = encoding.as_str();
             match encoding {
                 "gzip" => {
                     let body = resp.take_body();
-                    let decoder = async_compression::futures::bufread::GzipDecoder::new(body);
-                    let decoder = async_std::io::BufReader::new(decoder);
-                    let body = Body::from_reader(decoder, None);
-                    resp.set_body(body);
+                    body_code(&mut resp, GzipDecoder::new(body))
                 }
                 "br" => {
                     let body = resp.take_body();
-                    let decoder = async_compression::futures::bufread::BrotliDecoder::new(body);
-                    let decoder = async_std::io::BufReader::new(decoder);
-                    let body = Body::from_reader(decoder, None);
-                    resp.set_body(body);
+                    body_code(&mut resp, BrotliDecoder::new(body))
+                }
+                "deflate" => {
+                    let body = resp.take_body();
+                    body_code(&mut resp, DeflateDecoder::new(body))
                 }
                 e => error!("unhandled encoding: {}", e),
             }
@@ -232,7 +215,7 @@ impl<'a> Forward<'a> {
                     }
                     Err(_) => error!("meeting \"text/html\", but can not convert to utf-8 string"),
                 },
-                _ => {}
+                _ => (),
             }
         }
 
@@ -241,26 +224,29 @@ impl<'a> Forward<'a> {
             match encoding {
                 "gzip" => {
                     let body = resp.take_body();
-                    let encoder = async_compression::futures::bufread::GzipEncoder::new(body);
-                    let encoder = async_std::io::BufReader::new(encoder);
-                    let body = Body::from_reader(encoder, None);
-                    resp.set_body(body);
+                    body_code(&mut resp, GzipEncoder::new(body))
                 }
                 "br" => {
                     let body = resp.take_body();
-                    let decoder = async_compression::futures::bufread::BrotliEncoder::new(body);
-                    let decoder = async_std::io::BufReader::new(decoder);
-                    let body = Body::from_reader(decoder, None);
-                    resp.set_body(body);
+                    body_code(&mut resp, BrotliEncoder::new(body))
+                }
+                "deflate" => {
+                    let body = resp.take_body();
+                    body_code(&mut resp, DeflateEncoder::new(body))
                 }
                 _ => (),
             }
         }
-        //for i in resp.iter() {
-        //dbg!(i);
-        //}
         Ok(resp)
     }
+}
+
+fn response(code: u16, message: &str) -> http_types::Result<Response> {
+    let code: StatusCode = code.try_into()?;
+    let mut resp = Response::new(code);
+    resp.set_content_type("text/plain".parse()?);
+    resp.set_body(message);
+    Ok(resp)
 }
 
 async fn resolve(host: &str) -> Result<SocketAddr> {
@@ -269,4 +255,35 @@ async fn resolve(host: &str) -> Result<SocketAddr> {
         .to_socket_addrs()?
         .next()
         .ok_or(anyhow!("invalid host")))
+}
+
+fn body_code<T>(resp: &mut Response, coder: T)
+where
+    T: AsyncRead + Unpin + Send + Sync + 'static,
+{
+    let coder = async_std::io::BufReader::new(coder);
+    let body = Body::from_reader(coder, None);
+    resp.set_body(body);
+}
+
+async fn serve(req: Request) -> http_types::Result<Response> {
+    FORWARD.forward(req).await
+}
+
+pub fn run() -> Result<()> {
+    smol::run(async {
+        let addr: SocketAddr = CONFIG.listen_address.as_str().parse()?;
+        let listener = Async::<TcpListener>::bind(addr)?;
+        loop {
+            let (stream, _) = listener.accept().await?;
+            let stream = async_dup::Arc::new(stream);
+            let task = Task::spawn(async move {
+                if let Err(err) = async_h1::accept(stream, serve).await {
+                    error!("Connection error: {:#?}", err);
+                }
+            });
+
+            task.detach();
+        }
+    })
 }
