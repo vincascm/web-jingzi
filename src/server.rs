@@ -112,7 +112,7 @@ impl<'a> Forward<'a> {
         };
         match self.domain.get(domain) {
             Some(domain) => self.request(req, domain).await,
-            None => return response(400, "invalid domain"),
+            None => return response(400, "invalid domain, check config file"),
         }
     }
 
@@ -121,10 +121,10 @@ impl<'a> Forward<'a> {
         let addr = target
             .address()
             .await
-            .map_err(|_| HttpError::from_str(StatusCode::InternalServerError, "invalid target"))?;
+            .map_err(|_| http_error("invalid target".to_string()))?;
         let req = target
             .fuse_request(req)
-            .map_err(|e| HttpError::from_str(StatusCode::InternalServerError, e.to_string()))?;
+            .map_err(|e| http_error(e.to_string()))?;
 
         let stream = match &CONFIG.socks5_server {
             Some(server) => {
@@ -136,6 +136,7 @@ impl<'a> Forward<'a> {
             }
             None => Async::<TcpStream>::connect(addr).await?,
         };
+
         let mut resp = match target.scheme() {
             "https" => {
                 let stream = async_native_tls::connect(host, stream).await?;
@@ -184,24 +185,8 @@ impl<'a> Forward<'a> {
             return Ok(resp);
         }
 
-        if let Some(encoding) = resp.header("content-encoding") {
-            let encoding = encoding.as_str();
-            match encoding {
-                "gzip" => {
-                    let body = resp.take_body();
-                    body_code(&mut resp, GzipDecoder::new(body))
-                }
-                "br" => {
-                    let body = resp.take_body();
-                    body_code(&mut resp, BrotliDecoder::new(body))
-                }
-                "deflate" => {
-                    let body = resp.take_body();
-                    body_code(&mut resp, DeflateDecoder::new(body))
-                }
-                e => error!("unhandled encoding: {}", e),
-            }
-        }
+        let decoder = Coder::De;
+        decoder.code(&mut resp);
 
         // replace domain
         if let Some(content_type) = resp.content_type() {
@@ -219,34 +204,57 @@ impl<'a> Forward<'a> {
             }
         }
 
+        let encoder = Coder::En;
+        encoder.code(&mut resp);
+
+        Ok(resp)
+    }
+}
+
+enum Coder {
+    De,
+    En,
+}
+
+impl Coder {
+    fn set_body<T>(resp: &mut Response, coder: T)
+    where
+        T: AsyncRead + Unpin + Send + Sync + 'static,
+    {
+        let coder = async_std::io::BufReader::new(coder);
+        let body = Body::from_reader(coder, None);
+        resp.set_body(body);
+    }
+
+    fn code(&self, resp: &mut Response) {
         if let Some(encoding) = resp.header("content-encoding") {
             let encoding = encoding.as_str();
             match encoding {
                 "gzip" => {
                     let body = resp.take_body();
-                    body_code(&mut resp, GzipEncoder::new(body))
+                    match self {
+                        Coder::En => Coder::set_body(resp, GzipEncoder::new(body)),
+                        Coder::De => Coder::set_body(resp, GzipDecoder::new(body)),
+                    }
                 }
                 "br" => {
                     let body = resp.take_body();
-                    body_code(&mut resp, BrotliEncoder::new(body))
+                    match self {
+                        Coder::En => Coder::set_body(resp, BrotliEncoder::new(body)),
+                        Coder::De => Coder::set_body(resp, BrotliDecoder::new(body)),
+                    }
                 }
                 "deflate" => {
                     let body = resp.take_body();
-                    body_code(&mut resp, DeflateEncoder::new(body))
+                    match self {
+                        Coder::En => Coder::set_body(resp, DeflateEncoder::new(body)),
+                        Coder::De => Coder::set_body(resp, DeflateDecoder::new(body)),
+                    }
                 }
-                _ => (),
+                e => error!("unhandled encoding: {}", e),
             }
         }
-        Ok(resp)
     }
-}
-
-fn response(code: u16, message: &str) -> http_types::Result<Response> {
-    let code: StatusCode = code.try_into()?;
-    let mut resp = Response::new(code);
-    resp.set_content_type("text/plain".parse()?);
-    resp.set_body(message);
-    Ok(resp)
 }
 
 async fn resolve(host: &str) -> Result<SocketAddr> {
@@ -257,13 +265,16 @@ async fn resolve(host: &str) -> Result<SocketAddr> {
         .ok_or(anyhow!("invalid host")))
 }
 
-fn body_code<T>(resp: &mut Response, coder: T)
-where
-    T: AsyncRead + Unpin + Send + Sync + 'static,
-{
-    let coder = async_std::io::BufReader::new(coder);
-    let body = Body::from_reader(coder, None);
-    resp.set_body(body);
+fn response(code: u16, message: &str) -> http_types::Result<Response> {
+    let code: StatusCode = code.try_into()?;
+    let mut resp = Response::new(code);
+    resp.set_content_type("text/plain".parse()?);
+    resp.set_body(message);
+    Ok(resp)
+}
+
+fn http_error(error: String) -> HttpError {
+    HttpError::from_str(StatusCode::InternalServerError, error)
 }
 
 async fn serve(req: Request) -> http_types::Result<Response> {

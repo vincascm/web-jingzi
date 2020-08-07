@@ -9,8 +9,9 @@ listen_address: 127.0.0.1:3003
 # optional, if set, will forward all connect to this proxy
 socks5_server: 127.0.0.1:1080
 domain_name:
+  # default scheme is https
   x.com: www.google.com
-  y.com: wikipedia.org
+  y.com: http://wikipedia.org:8080
 ```
 
 with nginx:
