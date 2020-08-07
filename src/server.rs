@@ -57,11 +57,17 @@ impl Target {
         &self.host
     }
 
-    fn address(&self) -> Result<SocketAddr> {
-        (self.host.as_str(), self.port)
+    fn port(&self) -> u16 {
+        self.port
+    }
+
+    async fn address(&self) -> Result<SocketAddr> {
+        let host = self.host.to_string();
+        let port = self.port;
+        smol::unblock!((host.as_str(), port)
             .to_socket_addrs()?
             .next()
-            .ok_or(anyhow!("invalid domain"))
+            .ok_or(anyhow!("invalid domain")))
     }
 
     fn fuse_request(&self, req: Request) -> Result<Request> {
@@ -141,12 +147,22 @@ impl<'a> Forward<'a> {
         let host = target.host();
         let addr = target
             .address()
+            .await
             .map_err(|_| HttpError::from_str(StatusCode::InternalServerError, "invalid target"))?;
         let req = target
             .fuse_request(req)
             .map_err(|e| HttpError::from_str(StatusCode::InternalServerError, e.to_string()))?;
 
-        let stream = Async::<TcpStream>::connect(addr).await?;
+        let stream = match &CONFIG.socks5_server {
+            Some(server) => {
+                socks5::connect_without_auth(
+                    resolve(server).await?,
+                    (target.host().to_string(), target.port()).into(),
+                )
+                .await?
+            }
+            None => Async::<TcpStream>::connect(addr).await?,
+        };
         let mut resp = match target.scheme() {
             "https" => {
                 let stream = async_native_tls::connect(host, stream).await?;
@@ -193,7 +209,14 @@ impl<'a> Forward<'a> {
                     let body = Body::from_reader(decoder, None);
                     resp.set_body(body);
                 }
-                _ => (),
+                "br" => {
+                    let body = resp.take_body();
+                    let decoder = async_compression::futures::bufread::BrotliDecoder::new(body);
+                    let decoder = async_std::io::BufReader::new(decoder);
+                    let body = Body::from_reader(decoder, None);
+                    resp.set_body(body);
+                }
+                e => error!("unhandled encoding: {}", e),
             }
         }
 
@@ -223,6 +246,13 @@ impl<'a> Forward<'a> {
                     let body = Body::from_reader(encoder, None);
                     resp.set_body(body);
                 }
+                "br" => {
+                    let body = resp.take_body();
+                    let decoder = async_compression::futures::bufread::BrotliEncoder::new(body);
+                    let decoder = async_std::io::BufReader::new(decoder);
+                    let body = Body::from_reader(decoder, None);
+                    resp.set_body(body);
+                }
                 _ => (),
             }
         }
@@ -231,4 +261,12 @@ impl<'a> Forward<'a> {
         //}
         Ok(resp)
     }
+}
+
+async fn resolve(host: &str) -> Result<SocketAddr> {
+    let host = host.to_string();
+    smol::unblock!(host
+        .to_socket_addrs()?
+        .next()
+        .ok_or(anyhow!("invalid host")))
 }
