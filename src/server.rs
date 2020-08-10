@@ -108,11 +108,11 @@ impl<'a> Forward<'a> {
         let url = req.url();
         let domain = match url.domain() {
             Some(h) => h,
-            None => return response(400, "missing domain"),
+            None => return Err(http_error("missing domain".to_string())),
         };
         match self.domain.get(domain) {
             Some(domain) => self.request(req, domain).await,
-            None => return response(400, "invalid domain, check config file"),
+            None => return Err(http_error("invalid domain, check config file".to_string())),
         }
     }
 
@@ -128,11 +128,13 @@ impl<'a> Forward<'a> {
 
         let stream = match &CONFIG.socks5_server {
             Some(server) => {
-                socks5::connect_without_auth(
-                    resolve(server).await?,
-                    (host.to_string(), target.port()).into(),
-                )
-                .await?
+                let server = server.clone();
+                let server = smol::unblock!(server
+                    .to_socket_addrs()?
+                    .next()
+                    .ok_or(anyhow!("invalid host")))?;
+                socks5::connect_without_auth(server, (host.to_string(), target.port()).into())
+                    .await?
             }
             None => Async::<TcpStream>::connect(addr).await?,
         };
@@ -143,7 +145,7 @@ impl<'a> Forward<'a> {
                 async_h1::connect(stream, req).await?
             }
             "http" => async_h1::connect(stream, req).await?,
-            s => return response(500, &format!("unsupported scheme: {}", s)),
+            s => return Err(http_error(format!("unsupported scheme: {}", s))),
         };
 
         if let Some(location) = resp.header("location") {
@@ -185,27 +187,28 @@ impl<'a> Forward<'a> {
             return Ok(resp);
         }
 
-        let decoder = Coder::De;
-        decoder.code(&mut resp);
+        Coder::De.code(&mut resp);
 
         // replace domain
         if let Some(content_type) = resp.content_type() {
             match content_type.essence() {
-                "text/html" => match resp.body_string().await {
+                "text/html"
+                | "text/javascript"
+                | "application/json"
+                | "application/manifest+json" => match resp.body_string().await {
                     Ok(mut body) => {
                         for (k, v) in &self.domain {
                             body = body.replace(&v.host_with_port(), k);
                         }
                         resp.set_body(body);
                     }
-                    Err(_) => error!("meeting \"text/html\", but can not convert to utf-8 string"),
+                    Err(_) => error!("can not convert body to utf-8 string"),
                 },
                 _ => (),
             }
         }
 
-        let encoder = Coder::En;
-        encoder.code(&mut resp);
+        Coder::En.code(&mut resp);
 
         Ok(resp)
     }
@@ -255,22 +258,6 @@ impl Coder {
             }
         }
     }
-}
-
-async fn resolve(host: &str) -> Result<SocketAddr> {
-    let host = host.to_string();
-    smol::unblock!(host
-        .to_socket_addrs()?
-        .next()
-        .ok_or(anyhow!("invalid host")))
-}
-
-fn response(code: u16, message: &str) -> http_types::Result<Response> {
-    let code: StatusCode = code.try_into()?;
-    let mut resp = Response::new(code);
-    resp.set_content_type("text/plain".parse()?);
-    resp.set_body(message);
-    Ok(resp)
 }
 
 fn http_error(error: String) -> HttpError {
