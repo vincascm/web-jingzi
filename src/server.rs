@@ -1,11 +1,11 @@
 use std::{
     collections::HashMap,
-    net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
+    net::{SocketAddr, TcpListener, TcpStream},
 };
 
 use anyhow::Result;
-use http_types::{Body, Error as HttpError, Request, Response, StatusCode};
-use smol::{io::AsyncRead, Async, Task};
+use http_types::{Body, Request, Response, StatusCode};
+use smol::{io::AsyncRead, net::AsyncToSocketAddrs, Async};
 
 use crate::constants::{CONFIG, FORWARD};
 
@@ -21,6 +21,12 @@ impl<'a> Forward<'a> {
 
     async fn forward(&self, req: Request) -> http_types::Result<Response> {
         let mut req = req;
+
+        match req.header("X-Web-Jingzi") {
+            Some(_) => return http_error("may be circular request"),
+            None => req.insert_header("X-Web-Jingzi", "true"),
+        };
+
         let query: Vec<_> = req
             .url()
             .query_pairs()
@@ -38,8 +44,9 @@ impl<'a> Forward<'a> {
             url.set_query(Some(&query));
         }
         if let Some(scheme) = scheme {
-            url.set_scheme(&scheme)
-                .map_err(|_| http_error("invalid request"))?;
+            if url.set_scheme(&scheme).is_err() {
+                return http_error("invalid request");
+            }
         }
         url.set_path(&path);
         if let Some(host) = url.host_str() {
@@ -63,23 +70,23 @@ impl<'a> Forward<'a> {
             }
         }
 
-        let host = req
-            .host()
-            .map(ToString::to_string)
-            .ok_or_else(|| http_error("invalid request"))?;
-        let port = req
-            .url()
-            .port_or_known_default()
-            .ok_or_else(|| http_error("invalid request"))?;
+        let host = match req.host().map(ToString::to_string) {
+            Some(host) => host,
+            None => return http_error("invalid request"),
+        };
+        let port = match req.url().port_or_known_default() {
+            Some(port) => port,
+            None => return http_error("invalid request"),
+        };
         let stream = match &CONFIG.socks5_server {
             Some(server) => {
                 let server = server.clone();
-                let server = self.resolv(server).await?;
+                let server = self.resolve(server).await?;
                 socks5::connect_without_auth(server, (host.clone(), port).into()).await?
             }
             None => {
                 let addr = format!("{}:{}", host, port);
-                let addr = self.resolv(addr).await?;
+                let addr = self.resolve(addr).await?;
                 Async::<TcpStream>::connect(addr).await?
             }
         };
@@ -90,7 +97,7 @@ impl<'a> Forward<'a> {
                 async_h1::connect(stream, req).await?
             }
             "http" => async_h1::connect(stream, req).await?,
-            s => return Err(http_error(&format!("unsupported scheme: {}", s))),
+            s => return http_error(&format!("unsupported scheme: {}", s)),
         };
 
         self.replace_header(&mut resp);
@@ -163,14 +170,8 @@ impl<'a> Forward<'a> {
         }
     }
 
-    async fn resolv<T: 'static + ToSocketAddrs + Send>(
-        &self,
-        s: T,
-    ) -> http_types::Result<SocketAddr> {
-        smol::unblock!(s
-            .to_socket_addrs()?
-            .next()
-            .ok_or_else(|| http_error("invalid host")))
+    async fn resolve<T: AsyncToSocketAddrs>(&self, s: T) -> http_types::Result<SocketAddr> {
+        Ok(smol::net::resolve(s).await.map(|i| i[0])?)
     }
 }
 
@@ -224,8 +225,11 @@ impl Coder {
     }
 }
 
-fn http_error(error: &str) -> HttpError {
-    HttpError::from_str(StatusCode::InternalServerError, error.to_string())
+fn http_error(error: &str) -> http_types::Result<Response> {
+    let mut resp = Response::new(StatusCode::InternalServerError);
+    resp.set_content_type(http_types::mime::PLAIN);
+    resp.set_body(error);
+    Ok(resp)
 }
 
 async fn serve(req: Request) -> http_types::Result<Response> {
@@ -233,13 +237,13 @@ async fn serve(req: Request) -> http_types::Result<Response> {
 }
 
 pub fn run() -> Result<()> {
-    smol::run(async {
+    smol::block_on(async {
         let addr: SocketAddr = CONFIG.listen_address.as_str().parse()?;
         let listener = Async::<TcpListener>::bind(addr)?;
         loop {
             let (stream, _) = listener.accept().await?;
             let stream = async_dup::Arc::new(stream);
-            let task = Task::spawn(async move {
+            let task = smol::spawn(async move {
                 if let Err(err) = async_h1::accept(stream, serve).await {
                     error!("Connection error: {:#?}", err);
                 }
