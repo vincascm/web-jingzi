@@ -15,8 +15,22 @@ pub struct Forward<'a> {
 }
 
 impl<'a> Forward<'a> {
-    pub fn new(domain: &'a HashMap<String, String>) -> Result<Forward<'a>> {
-        Ok(Forward { domain })
+    pub fn new(domain: &'a HashMap<String, String>) -> Forward<'a> {
+        Forward { domain }
+    }
+
+    pub fn check_domain(&self) -> Result<()> {
+        for i in self.domain.keys() {
+            for j in self.domain.keys() {
+                anyhow::ensure!(
+                    !(j != i && j.contains(i)),
+                    "conflict two domain \"{}\" and \"{}\"",
+                    j,
+                    i
+                )
+            }
+        }
+        Ok(())
     }
 
     async fn forward(&self, req: Request) -> http_types::Result<Response> {
@@ -82,6 +96,7 @@ impl<'a> Forward<'a> {
             Some(server) => {
                 let server = server.clone();
                 let server = self.resolve(server).await?;
+                trace!("socks5 dest: host: {}, port: {}", &host, port);
                 socks5::connect_without_auth(server, (host.clone(), port).into()).await?
             }
             None => {
@@ -237,6 +252,7 @@ async fn serve(req: Request) -> http_types::Result<Response> {
 }
 
 pub fn run() -> Result<()> {
+    FORWARD.check_domain()?;
     smol::block_on(async {
         let addr: SocketAddr = CONFIG.listen_address.as_str().parse()?;
         let listener = Async::<TcpListener>::bind(addr)?;
