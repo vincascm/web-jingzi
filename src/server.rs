@@ -1,11 +1,13 @@
-use std::{
-    collections::HashMap,
-    net::{SocketAddr, TcpListener, TcpStream},
-};
+use std::collections::HashMap;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use http_types::{Body, Request, Response, StatusCode};
-use smol::{io::AsyncRead, net::AsyncToSocketAddrs, Async};
+use smol::{
+    block_on,
+    io::AsyncRead,
+    net::{resolve, AsyncToSocketAddrs, SocketAddr, TcpListener, TcpStream},
+    spawn,
+};
 
 use crate::constants::{CONFIG, FORWARD};
 
@@ -102,7 +104,7 @@ impl<'a> Forward<'a> {
             None => {
                 let addr = format!("{}:{}", host, port);
                 let addr = self.resolve(addr).await?;
-                Async::<TcpStream>::connect(addr).await?
+                TcpStream::connect(addr).await?
             }
         };
 
@@ -185,8 +187,11 @@ impl<'a> Forward<'a> {
         }
     }
 
-    async fn resolve<T: AsyncToSocketAddrs>(&self, s: T) -> http_types::Result<SocketAddr> {
-        Ok(smol::net::resolve(s).await.map(|i| i[0])?)
+    async fn resolve<T: AsyncToSocketAddrs>(&self, s: T) -> Result<SocketAddr> {
+        Ok(*resolve(s)
+            .await?
+            .first()
+            .ok_or_else(|| anyhow!("invalid address"))?)
     }
 }
 
@@ -253,18 +258,16 @@ async fn serve(req: Request) -> http_types::Result<Response> {
 
 pub fn run() -> Result<()> {
     FORWARD.check_domain()?;
-    smol::block_on(async {
-        let addr: SocketAddr = CONFIG.listen_address.as_str().parse()?;
-        let listener = Async::<TcpListener>::bind(addr)?;
+    block_on(async {
+        let listener = TcpListener::bind(&CONFIG.listen_address).await?;
         loop {
             let (stream, _) = listener.accept().await?;
             let stream = async_dup::Arc::new(stream);
-            let task = smol::spawn(async move {
+            let task = spawn(async move {
                 if let Err(err) = async_h1::accept(stream, serve).await {
                     error!("Connection error: {:#?}", err);
                 }
             });
-
             task.detach();
         }
     })
