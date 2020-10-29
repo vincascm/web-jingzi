@@ -5,28 +5,28 @@ authors = ["vinoca <vinoca@vinoca.org>"]
 edition = "2018"
 
 [dependencies]
-anyhow = "1.0.32"
-smol = "1.0.0"
+anyhow = "1.0.33"
+smol = "1.2.4"
 serde_yaml = "0.8.13"
 once_cell = "1.4.1"
-async-io = "1.0.1"
-async-dup = "1.2.1"
-env_logger = "0.7.1"
+async-io = "1.1.10"
+async-dup = "1.2.2"
+env_logger = "0.8.1"
 log = "0.4.11"
-async-std = "1.6.3"
+async-std = "1.6.5"
 async-native-tls = "0.3.3"
-async-h1 = "2.1.2"
+async-h1 = "2.1.3"
 
 [dependencies.socks5]
 version = "0.2.2"
 git = "https://github.com/vincascm/socks5.git"
 
 [dependencies.http-types]
-version = "2.4.0"
+version = "2.6.0"
 default-features = false
 
 [dependencies.serde]
-version = "1.0.115"
+version = "1.0.117"
 features = ["derive"]
 
 [dependencies.async-compression]

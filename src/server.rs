@@ -1,12 +1,15 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    net::{SocketAddr, TcpListener, TcpStream},
+};
 
 use anyhow::{anyhow, Result};
 use http_types::{Body, Request, Response, StatusCode};
 use smol::{
     block_on,
     io::AsyncRead,
-    net::{resolve, AsyncToSocketAddrs, SocketAddr, TcpListener, TcpStream},
-    spawn,
+    net::{resolve, AsyncToSocketAddrs},
+    spawn, Async,
 };
 
 use crate::constants::{CONFIG, FORWARD};
@@ -104,7 +107,7 @@ impl<'a> Forward<'a> {
             None => {
                 let addr = format!("{}:{}", host, port);
                 let addr = self.resolve(addr).await?;
-                TcpStream::connect(addr).await?
+                Async::<TcpStream>::connect(addr).await?
             }
         };
 
@@ -258,8 +261,9 @@ async fn serve(req: Request) -> http_types::Result<Response> {
 
 pub fn run() -> Result<()> {
     FORWARD.check_domain()?;
+    let listen_address: SocketAddr = CONFIG.listen_address.parse()?;
     block_on(async {
-        let listener = TcpListener::bind(&CONFIG.listen_address).await?;
+        let listener = Async::<TcpListener>::bind(listen_address)?;
         loop {
             let (stream, _) = listener.accept().await?;
             let stream = async_dup::Arc::new(stream);
