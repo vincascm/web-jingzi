@@ -17,11 +17,15 @@ use crate::constants::{CONFIG, FORWARD};
 #[derive(Debug)]
 pub struct Forward<'a> {
     domain: &'a HashMap<String, String>,
+    use_https: &'a Option<Vec<String>>,
 }
 
 impl<'a> Forward<'a> {
-    pub fn new(domain: &'a HashMap<String, String>) -> Forward<'a> {
-        Forward { domain }
+    pub fn new(
+        domain: &'a HashMap<String, String>,
+        use_https: &'a Option<Vec<String>>,
+    ) -> Forward<'a> {
+        Forward { domain, use_https }
     }
 
     pub fn check_domain(&self) -> Result<()> {
@@ -55,7 +59,22 @@ impl<'a> Forward<'a> {
             })
             .collect();
         let query = query.join("&");
-        let scheme = req.header("X-Scheme").map(|i| i.as_str().to_string());
+        let scheme = match req.url().domain() {
+            Some(domain) => {
+                let scheme = match self.use_https {
+                    Some(use_https) => {
+                        if use_https.contains(&domain.to_string()) {
+                            Some("https".to_string())
+                        } else {
+                            None
+                        }
+                    }
+                    None => None,
+                };
+                scheme.or_else(|| req.header("X-Scheme").map(|i| i.as_str().to_string()))
+            }
+            None => return http_error("missing domain in request"),
+        };
         let path = req.url().path();
         let path = self.restore_domain(path);
         let url = req.url_mut();

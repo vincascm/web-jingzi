@@ -7,10 +7,14 @@ mirror of website with domain name substitution
 ```yaml
 listen_address: 127.0.0.1:3003
 # optional, if set, will forward all connect to this proxy
-socks5_server: 127.0.0.1:1080
+# socks5_server: 127.0.0.1:1080
 domain_name:
   x.com: www.google.com
   y.com: wikipedia.org
+# request to corresponding url, like http://x.com -> http://www.google.com, will replace http://www.google.com to https://www.google.com
+use_https:
+  - x.com
+  - y.com
 ```
 
 with nginx:
