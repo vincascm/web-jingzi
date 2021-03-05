@@ -1,6 +1,6 @@
 [package]
 name = "web-jingzi"
-version = "0.2.1"
+version = "0.2.2"
 authors = ["vinoca <vinoca@vinoca.org>"]
 edition = "2018"
 

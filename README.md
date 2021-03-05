@@ -17,7 +17,17 @@ use_https:
   - y.com
 ```
 
-with nginx:
+## install and run:
+
+download binary file from release page [release page](https://github.com/vincascm/web-jingzi/releases)
+
+and run it:
+
+```shell
+web-jingzi [full path config file]
+```
+
+## with nginx:
 
 ```nginx
     server {
@@ -42,3 +52,8 @@ with nginx:
         }
     }
 ```
+
+## website test result
+
+1. [x] [**ok**] www.google.com
+1. [x] [**ok**] www.wikipedia.org zh.wikipedia.org
