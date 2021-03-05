@@ -60,19 +60,17 @@ impl<'a> Forward<'a> {
             .collect();
         let query = query.join("&");
         let scheme = match req.url().domain() {
-            Some(domain) => {
-                let scheme = match self.use_https {
-                    Some(use_https) => {
-                        if use_https.contains(&domain.to_string()) {
-                            Some("https".to_string())
-                        } else {
-                            None
-                        }
+            Some(domain) => self
+                .use_https
+                .as_ref()
+                .and_then(|use_https| {
+                    if use_https.iter().any(|i| i == domain) {
+                        Some("https".to_string())
+                    } else {
+                        None
                     }
-                    None => None,
-                };
-                scheme.or_else(|| req.header("X-Scheme").map(|i| i.as_str().to_string()))
-            }
+                })
+                .or_else(|| req.header("X-Scheme").map(|i| i.as_str().to_string())),
             None => return http_error("missing domain in request"),
         };
         let path = req.url().path();
