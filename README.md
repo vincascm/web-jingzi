@@ -15,6 +15,15 @@ domain_name:
 use_https:
   - x.com
   - y.com
+authorization:
+  enabled: true
+  domain_list:
+    - x.com
+    - y.com
+  account:
+    -
+      username: tony
+      password: 123
 ```
 
 ## install and run:
