@@ -300,6 +300,13 @@ impl Forward {
     }
 }
 
+macro_rules! set_code {
+    ($response: ident, $coder: ident) => {{
+        let body = $response.take_body();
+        Self::set_body($response, $coder::new(body))
+    }};
+}
+
 enum Coder {
     De,
     En,
@@ -320,20 +327,19 @@ impl Coder {
             BrotliDecoder, BrotliEncoder, DeflateDecoder, DeflateEncoder, GzipDecoder, GzipEncoder,
         };
 
-        let body = resp.take_body();
         if let Some(encoding) = resp.header("content-encoding") {
             let encoding = encoding.as_str();
             match self {
                 Coder::En => match encoding {
-                    "gzip" => Self::set_body(resp, GzipEncoder::new(body)),
-                    "br" => Self::set_body(resp, BrotliEncoder::new(body)),
-                    "deflate" => Self::set_body(resp, DeflateEncoder::new(body)),
+                    "gzip" => set_code!(resp, GzipEncoder),
+                    "br" => set_code!(resp, BrotliEncoder),
+                    "deflate" => set_code!(resp, DeflateEncoder),
                     e => error!("unhandled encoding: {}", e),
                 },
                 Coder::De => match encoding {
-                    "gzip" => Self::set_body(resp, GzipDecoder::new(body)),
-                    "br" => Self::set_body(resp, BrotliDecoder::new(body)),
-                    "deflate" => Self::set_body(resp, DeflateDecoder::new(body)),
+                    "gzip" => set_code!(resp, GzipDecoder),
+                    "br" => set_code!(resp, BrotliDecoder),
+                    "deflate" => set_code!(resp, DeflateDecoder),
                     e => error!("unhandled encoding: {}", e),
                 },
             };
