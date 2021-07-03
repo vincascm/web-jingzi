@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::HashSet,
     net::{SocketAddr, TcpListener, TcpStream},
     sync::Arc,
@@ -28,20 +29,6 @@ impl Forward {
         Forward {
             tokens: Mutex::new(HashSet::new()),
         }
-    }
-
-    fn check_domain(&self) -> Result<()> {
-        for i in CONFIG.domain_name.keys() {
-            for j in CONFIG.domain_name.keys() {
-                anyhow::ensure!(
-                    !(j != i && j.contains(i)),
-                    "conflict two domain \"{}\" and \"{}\"",
-                    j,
-                    i
-                )
-            }
-        }
-        Ok(())
     }
 
     fn check_domain_list_in_domain<'a>(domain_list: &[&'a str], domain: &&str) -> Option<&'a str> {
@@ -78,25 +65,26 @@ impl Forward {
                                         .http_only(true)
                                         .finish();
                                     let cookie: HeaderValue = cookie.into();
-                                    let mut resp = result(true)?;
+                                    let mut resp = Self::result(true)?;
                                     resp.append_header("Set-Cookie", cookie);
                                     return Ok(resp);
                                 } else {
-                                    return result(false);
+                                    return Self::result(false);
                                 }
                             }
                         // check authorization
                         } else {
                             let cookies_header = match req.header("Cookie") {
                                 Some(c) => c,
-                                None => return show_login_page(),
+                                None => return Self::show_login_page(),
                             };
                             let mut token = None;
-                            for i in cookies_header {
+                            'outer: for i in cookies_header {
                                 for item in i.as_str().split("; ") {
                                     let cookie: Vec<_> = item.split('=').collect();
                                     if cookie.len() == 2 && cookie[0] == COOKIE_NAME {
                                         token = Some(cookie[1]);
+                                        break 'outer;
                                     }
                                 }
                             }
@@ -104,10 +92,10 @@ impl Forward {
                                 Some(token) => {
                                     let tokens = self.tokens.lock().await;
                                     if !tokens.contains(token) {
-                                        return show_login_page();
+                                        return Self::show_login_page();
                                     }
                                 }
-                                None => return show_login_page(),
+                                None => return Self::show_login_page(),
                             }
                         }
                     }
@@ -116,7 +104,7 @@ impl Forward {
         }
 
         match req.header("X-Web-Jingzi") {
-            Some(_) => return http_error("may be circular request"),
+            Some(_) => return Self::http_error("may be circular request"),
             None => req.insert_header("X-Web-Jingzi", "true"),
         };
 
@@ -124,7 +112,7 @@ impl Forward {
             .url()
             .query_pairs()
             .map(|(q, v)| {
-                let s = self.restore_domain(&v);
+                let s = Self::restore_domain(v.into());
                 format!("{}={}", q, s)
             })
             .collect();
@@ -141,33 +129,36 @@ impl Forward {
                     }
                 })
                 .or_else(|| req.header("X-Scheme").map(|i| i.as_str().to_string())),
-            None => return http_error("missing domain in request"),
+            None => return Self::http_error("missing domain in request"),
         };
         let path = req.url().path();
-        let path = self.restore_domain(path);
+        let path = Self::restore_domain(path.into());
         let url = req.url_mut();
         if !query.is_empty() {
             url.set_query(Some(&query));
         }
         if let Some(scheme) = scheme {
             if url.set_scheme(&scheme).is_err() {
-                return http_error("invalid request");
+                return Self::http_error("invalid request");
             }
         }
         url.set_path(&path);
         if let Some(host) = url.host_str() {
-            let host = self.restore_domain(host);
+            let host = Self::restore_domain(host.into());
             url.set_host(Some(&host))?;
             req.insert_header("host", host);
         }
-        self.restore_header(&mut req);
-
+        Self::restore_header(&mut req);
         if let Some(content_type) = req.content_type() {
             match content_type.essence() {
-                "application/x-www-form-urlencoded" | "text/plain" => match req.body_string().await
-                {
+                "text/html"
+                | "text/plain"
+                | "text/javascript"
+                | "application/json"
+                | "application/manifest+json"
+                | "application/x-www-form-urlencoded" => match req.body_string().await {
                     Ok(body) => {
-                        let body = self.restore_domain(&body);
+                        let body = Self::restore_domain(body.into());
                         req.set_body(body);
                     }
                     Err(_) => error!("can not convert body to utf-8 string"),
@@ -176,20 +167,19 @@ impl Forward {
             }
         }
 
-        let host = match req.host().map(ToString::to_string) {
+        let host = match req.host() {
             Some(host) => host,
-            None => return http_error("invalid request"),
+            None => return Self::http_error("invalid request"),
         };
         let port = match req.url().port_or_known_default() {
             Some(port) => port,
-            None => return http_error("invalid request"),
+            None => return Self::http_error("invalid request"),
         };
         let stream = match &CONFIG.socks5_server {
             Some(server) => {
-                let server = server.clone();
                 let server = Self::resolve(server).await?;
                 trace!("socks5 dest: host: {}, port: {}", &host, port);
-                socks5::connect_without_auth(server, (host.clone(), port).into()).await?
+                socks5::connect_without_auth(server, (host.to_string(), port).into()).await?
             }
             None => {
                 let addr = format!("{}:{}", host, port);
@@ -204,52 +194,56 @@ impl Forward {
                 async_h1::connect(stream, req).await?
             }
             "http" => async_h1::connect(stream, req).await?,
-            s => return http_error(&format!("unsupported scheme: {}", s)),
+            s => return Self::http_error(&format!("unsupported scheme: {}", s)),
         };
 
-        self.replace_header(&mut resp);
+        Self::replace_header(&mut resp);
 
         if resp.status() == StatusCode::NotModified {
             return Ok(resp);
         }
 
-        Coder::De.code(&mut resp);
         if let Some(content_type) = resp.content_type() {
             match content_type.essence() {
                 "text/html"
+                | "text/plain"
                 | "text/javascript"
                 | "application/json"
-                | "application/manifest+json" => match resp.body_string().await {
-                    Ok(body) => {
-                        let body = self.replace_domain(&body);
-                        resp.set_body(body);
+                | "application/manifest+json"
+                | "application/x-www-form-urlencoded" => {
+                    Coder::De.code(&mut resp);
+                    match resp.body_string().await {
+                        Ok(body) => {
+                            let body = Self::replace_domain(body.into());
+                            resp.set_body(body);
+                        }
+                        Err(_) => error!("can not convert body to utf-8 string"),
                     }
-                    Err(_) => error!("can not convert body to utf-8 string"),
-                },
+                    Coder::En.code(&mut resp);
+                }
                 _ => (),
             }
         }
-        Coder::En.code(&mut resp);
         Ok(resp)
     }
 
-    fn replace_domain(&self, s: &str) -> String {
-        let mut result = s.to_string();
+    fn replace_domain(s: Cow<str>) -> String {
+        let mut result = s.into_owned();
         for (k, v) in &CONFIG.domain_name {
-            result = result.replace(v.as_str(), k);
+            result = result.replace(v, k);
         }
         result
     }
 
-    fn restore_domain(&self, s: &str) -> String {
-        let mut result = s.to_string();
+    fn restore_domain(s: Cow<str>) -> String {
+        let mut result = s.into_owned();
         for (k, v) in &CONFIG.domain_name {
             result = result.replace(k, v);
         }
         result
     }
 
-    fn replace_header(&self, req: &mut Response) {
+    fn replace_header(req: &mut Response) {
         const HEADERS: &[&str] = &[
             "location",
             "set-cookie",
@@ -260,18 +254,18 @@ impl Forward {
 
         for i in HEADERS {
             if let Some(h) = req.header(*i) {
-                let h = self.replace_domain(h.as_str());
+                let h = Self::replace_domain(h.as_str().into());
                 req.insert_header(*i, h);
             }
         }
     }
 
-    fn restore_header(&self, req: &mut Request) {
+    fn restore_header(req: &mut Request) {
         const HEADERS: &[&str] = &["origin", "referer"];
 
         for i in HEADERS {
             if let Some(h) = req.header(*i) {
-                let h = self.restore_domain(h.as_str());
+                let h = Self::restore_domain(h.as_str().into());
                 req.insert_header(*i, h);
             }
         }
@@ -282,6 +276,27 @@ impl Forward {
             .await?
             .first()
             .ok_or_else(|| anyhow!("invalid address"))?)
+    }
+
+    fn http_error(error: &str) -> http_types::Result<Response> {
+        let mut resp = Response::new(StatusCode::InternalServerError);
+        resp.set_content_type(http_types::mime::PLAIN);
+        resp.set_body(error);
+        Ok(resp)
+    }
+
+    fn show_login_page() -> http_types::Result<Response> {
+        let mut resp = Response::new(StatusCode::Ok);
+        resp.set_content_type(http_types::mime::HTML);
+        resp.set_body(&include_bytes!("login.html")[..]);
+        Ok(resp)
+    }
+
+    fn result(success: bool) -> http_types::Result<Response> {
+        let mut resp = Response::new(StatusCode::Ok);
+        resp.set_content_type(http_types::mime::JSON);
+        resp.set_body(format!("{{\"success\": {}}}", success));
+        Ok(resp)
     }
 }
 
@@ -305,63 +320,33 @@ impl Coder {
             BrotliDecoder, BrotliEncoder, DeflateDecoder, DeflateEncoder, GzipDecoder, GzipEncoder,
         };
 
+        let body = resp.take_body();
         if let Some(encoding) = resp.header("content-encoding") {
             let encoding = encoding.as_str();
-            match encoding {
-                "gzip" => {
-                    let body = resp.take_body();
-                    match self {
-                        Coder::En => Coder::set_body(resp, GzipEncoder::new(body)),
-                        Coder::De => Coder::set_body(resp, GzipDecoder::new(body)),
-                    }
-                }
-                "br" => {
-                    let body = resp.take_body();
-                    match self {
-                        Coder::En => Coder::set_body(resp, BrotliEncoder::new(body)),
-                        Coder::De => Coder::set_body(resp, BrotliDecoder::new(body)),
-                    }
-                }
-                "deflate" => {
-                    let body = resp.take_body();
-                    match self {
-                        Coder::En => Coder::set_body(resp, DeflateEncoder::new(body)),
-                        Coder::De => Coder::set_body(resp, DeflateDecoder::new(body)),
-                    }
-                }
-                e => error!("unhandled encoding: {}", e),
-            }
+            match self {
+                Coder::En => match encoding {
+                    "gzip" => Self::set_body(resp, GzipEncoder::new(body)),
+                    "br" => Self::set_body(resp, BrotliEncoder::new(body)),
+                    "deflate" => Self::set_body(resp, DeflateEncoder::new(body)),
+                    e => error!("unhandled encoding: {}", e),
+                },
+                Coder::De => match encoding {
+                    "gzip" => Self::set_body(resp, GzipDecoder::new(body)),
+                    "br" => Self::set_body(resp, BrotliDecoder::new(body)),
+                    "deflate" => Self::set_body(resp, DeflateDecoder::new(body)),
+                    e => error!("unhandled encoding: {}", e),
+                },
+            };
         }
     }
 }
 
-fn http_error(error: &str) -> http_types::Result<Response> {
-    let mut resp = Response::new(StatusCode::InternalServerError);
-    resp.set_content_type(http_types::mime::PLAIN);
-    resp.set_body(error);
-    Ok(resp)
-}
-
-fn show_login_page() -> http_types::Result<Response> {
-    let mut resp = Response::new(StatusCode::Ok);
-    resp.set_content_type(http_types::mime::HTML);
-    resp.set_body(&include_bytes!("login.html")[..]);
-    Ok(resp)
-}
-
-fn result(success: bool) -> http_types::Result<Response> {
-    let mut resp = Response::new(StatusCode::Ok);
-    resp.set_content_type(http_types::mime::JSON);
-    resp.set_body(format!("{{\"success\": {}}}", success));
-    Ok(resp)
-}
-
 pub fn run() -> Result<()> {
     block_on(async {
+        CONFIG.check_domain()?;
         let listen_address: SocketAddr = CONFIG.listen_address.parse()?;
         let listener = Async::<TcpListener>::bind(listen_address)?;
         let forward = Forward::new();
-        forward.check_domain()?;
         let forward = Arc::new(forward);
         loop {
             let (stream, _) = listener.accept().await?;

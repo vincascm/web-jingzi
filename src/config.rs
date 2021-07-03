@@ -19,6 +19,20 @@ impl Config {
         let config = serde_yaml::from_reader(file)?;
         Ok(config)
     }
+
+    pub fn check_domain(&self) -> Result<()> {
+        for i in self.domain_name.keys() {
+            for j in self.domain_name.keys() {
+                anyhow::ensure!(
+                    !(j != i && j.contains(i)),
+                    "conflict two domain \"{}\" and \"{}\"",
+                    j,
+                    i
+                )
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Deserialize, Debug)]
