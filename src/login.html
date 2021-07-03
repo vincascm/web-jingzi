@@ -12,6 +12,12 @@
         <button id="submit">Sign in</button>
         <script>
             var submit = document.getElementById("submit");
+			submit.addEventListener("keyup", function(event) {
+				if (event.keyCode === 13) {
+					event.preventDefault();
+					submit.click();
+				}
+			});
             submit.onclick = function() {
                 var username = document.getElementById("username");
                 var password = document.getElementById("password");
