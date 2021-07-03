@@ -1,34 +1,38 @@
 [package]
 name = "web-jingzi"
-version = "0.2.2"
+version = "0.3.0"
 authors = ["vinoca <vinoca@vinoca.org>"]
 edition = "2018"
 
 [dependencies]
-anyhow = "1.0.38"
+anyhow = "1.0.41"
 smol = "1.2.5"
 serde_yaml = "0.8.17"
-once_cell = "1.7.0"
-async-io = "1.3.1"
+once_cell = "1.8.0"
+async-io = "1.6.0"
 async-dup = "1.2.2"
-env_logger = "0.8.3"
+env_logger = "0.8.4"
 log = "0.4.14"
 async-std = "1.9.0"
 async-native-tls = "0.3.3"
-async-h1 = "2.3.1"
+async-h1 = "2.3.2"
+time = "0.2.27"
 
 [dependencies.socks5]
 version = "0.2.2"
 git = "https://github.com/vincascm/socks5.git"
 
+[dependencies.uuid]
+version = "0.8.2"
+features = ["v4"]
+
 [dependencies.http-types]
-version = "2.10.0"
-default-features = false
+version = "2.11.1"
 
 [dependencies.serde]
-version = "1.0.123"
+version = "1.0.126"
 features = ["derive"]
 
 [dependencies.async-compression]
-version = "0.3.7"
+version = "0.3.8"
 features = ["brotli", "deflate", "gzip", "futures-io"]

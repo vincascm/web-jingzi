@@ -6,9 +6,10 @@ use serde::Deserialize;
 #[derive(Deserialize, Debug)]
 pub struct Config {
     pub listen_address: String,
+    pub socks5_server: Option<String>,
     pub domain_name: HashMap<String, String>,
     pub use_https: Option<Vec<String>>,
-    pub socks5_server: Option<String>,
+    pub authorization: Authorization,
 }
 
 impl Config {
@@ -18,4 +19,17 @@ impl Config {
         let config = serde_yaml::from_reader(file)?;
         Ok(config)
     }
+}
+
+#[derive(Deserialize, Debug)]
+pub struct Authorization {
+    pub enabled: bool,
+    pub domain_list: Option<Vec<String>>,
+    pub account: Option<Vec<Account>>,
+}
+
+#[derive(Deserialize, PartialEq, Debug)]
+pub struct Account {
+    pub username: String,
+    pub password: String,
 }

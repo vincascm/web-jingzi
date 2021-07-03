@@ -1,36 +1,38 @@
 use std::{
-    collections::HashMap,
+    collections::HashSet,
     net::{SocketAddr, TcpListener, TcpStream},
+    sync::Arc,
 };
 
 use anyhow::{anyhow, Result};
-use http_types::{Body, Request, Response, StatusCode};
+use http_types::{headers::HeaderValue, Body, Cookie, Request, Response, StatusCode};
 use smol::{
     block_on,
     io::AsyncRead,
+    lock::Mutex,
     net::{resolve, AsyncToSocketAddrs},
     spawn, Async,
 };
 
-use crate::constants::{CONFIG, FORWARD};
+use crate::{config::Account, constants::CONFIG};
+
+const COOKIE_NAME: &str = "__wj_token";
 
 #[derive(Debug)]
-pub struct Forward<'a> {
-    domain: &'a HashMap<String, String>,
-    use_https: &'a Option<Vec<String>>,
+struct Forward {
+    tokens: Mutex<HashSet<String>>,
 }
 
-impl<'a> Forward<'a> {
-    pub fn new(
-        domain: &'a HashMap<String, String>,
-        use_https: &'a Option<Vec<String>>,
-    ) -> Forward<'a> {
-        Forward { domain, use_https }
+impl Forward {
+    fn new() -> Forward {
+        Forward {
+            tokens: Mutex::new(HashSet::new()),
+        }
     }
 
-    pub fn check_domain(&self) -> Result<()> {
-        for i in self.domain.keys() {
-            for j in self.domain.keys() {
+    fn check_domain(&self) -> Result<()> {
+        for i in CONFIG.domain_name.keys() {
+            for j in CONFIG.domain_name.keys() {
                 anyhow::ensure!(
                     !(j != i && j.contains(i)),
                     "conflict two domain \"{}\" and \"{}\"",
@@ -42,8 +44,76 @@ impl<'a> Forward<'a> {
         Ok(())
     }
 
-    async fn forward(&self, req: Request) -> http_types::Result<Response> {
-        let mut req = req;
+    fn check_domain_list_in_domain<'a>(domain_list: &[&'a str], domain: &&str) -> Option<&'a str> {
+        for i in domain_list {
+            if domain.contains(i) {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    async fn forward(&self, mut req: Request) -> http_types::Result<Response> {
+        if CONFIG.authorization.enabled {
+            if let Some(domain_list) = &CONFIG.authorization.domain_list {
+                if let Some(d) = req.url().domain() {
+                    let domain_list: Vec<_> = domain_list.iter().map(|i| i.as_str()).collect();
+                    if let Some(domain) = Self::check_domain_list_in_domain(&domain_list, &d) {
+                        // login
+                        if req.url().path() == "/__wm__login" {
+                            if let Some(account_list) = &CONFIG.authorization.account {
+                                let account: Account = req.body_json().await?;
+                                if account_list.contains(&account) {
+                                    use time::{Duration, OffsetDateTime};
+                                    use uuid::Uuid;
+                                    let token = Uuid::new_v4().to_string();
+                                    let mut tokens = self.tokens.lock().await;
+                                    tokens.insert(token.clone());
+                                    let mut expires = OffsetDateTime::now_utc();
+                                    expires += Duration::days(3650);
+                                    let cookie = Cookie::build(COOKIE_NAME, &token)
+                                        .domain(domain)
+                                        .expires(expires)
+                                        .secure(true)
+                                        .http_only(true)
+                                        .finish();
+                                    let cookie: HeaderValue = cookie.into();
+                                    let mut resp = result(true)?;
+                                    resp.append_header("Set-Cookie", cookie);
+                                    return Ok(resp);
+                                } else {
+                                    return result(false);
+                                }
+                            }
+                        // check authorization
+                        } else {
+                            let cookies_header = match req.header("Cookie") {
+                                Some(c) => c,
+                                None => return show_login_page(),
+                            };
+                            let mut token = None;
+                            for i in cookies_header {
+                                for item in i.as_str().split("; ") {
+                                    let cookie: Vec<_> = item.split('=').collect();
+                                    if cookie.len() == 2 && cookie[0] == COOKIE_NAME {
+                                        token = Some(cookie[1]);
+                                    }
+                                }
+                            }
+                            match token {
+                                Some(token) => {
+                                    let tokens = self.tokens.lock().await;
+                                    if !tokens.contains(token) {
+                                        return show_login_page();
+                                    }
+                                }
+                                None => return show_login_page(),
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         match req.header("X-Web-Jingzi") {
             Some(_) => return http_error("may be circular request"),
@@ -60,7 +130,7 @@ impl<'a> Forward<'a> {
             .collect();
         let query = query.join("&");
         let scheme = match req.url().domain() {
-            Some(domain) => self
+            Some(domain) => CONFIG
                 .use_https
                 .as_ref()
                 .and_then(|use_https| {
@@ -117,13 +187,13 @@ impl<'a> Forward<'a> {
         let stream = match &CONFIG.socks5_server {
             Some(server) => {
                 let server = server.clone();
-                let server = self.resolve(server).await?;
+                let server = Self::resolve(server).await?;
                 trace!("socks5 dest: host: {}, port: {}", &host, port);
                 socks5::connect_without_auth(server, (host.clone(), port).into()).await?
             }
             None => {
                 let addr = format!("{}:{}", host, port);
-                let addr = self.resolve(addr).await?;
+                let addr = Self::resolve(addr).await?;
                 Async::<TcpStream>::connect(addr).await?
             }
         };
@@ -165,7 +235,7 @@ impl<'a> Forward<'a> {
 
     fn replace_domain(&self, s: &str) -> String {
         let mut result = s.to_string();
-        for (k, v) in self.domain {
+        for (k, v) in &CONFIG.domain_name {
             result = result.replace(v.as_str(), k);
         }
         result
@@ -173,7 +243,7 @@ impl<'a> Forward<'a> {
 
     fn restore_domain(&self, s: &str) -> String {
         let mut result = s.to_string();
-        for (k, v) in self.domain {
+        for (k, v) in &CONFIG.domain_name {
             result = result.replace(k, v);
         }
         result
@@ -207,7 +277,7 @@ impl<'a> Forward<'a> {
         }
     }
 
-    async fn resolve<T: AsyncToSocketAddrs>(&self, s: T) -> Result<SocketAddr> {
+    async fn resolve<T: AsyncToSocketAddrs>(s: T) -> Result<SocketAddr> {
         Ok(*resolve(s)
             .await?
             .first()
@@ -272,20 +342,34 @@ fn http_error(error: &str) -> http_types::Result<Response> {
     Ok(resp)
 }
 
-async fn serve(req: Request) -> http_types::Result<Response> {
-    FORWARD.forward(req).await
+fn show_login_page() -> http_types::Result<Response> {
+    let mut resp = Response::new(StatusCode::Ok);
+    resp.set_content_type(http_types::mime::HTML);
+    resp.set_body(&include_bytes!("login.html")[..]);
+    Ok(resp)
+}
+
+fn result(success: bool) -> http_types::Result<Response> {
+    let mut resp = Response::new(StatusCode::Ok);
+    resp.set_content_type(http_types::mime::JSON);
+    resp.set_body(format!("{{\"success\": {}}}", success));
+    Ok(resp)
 }
 
 pub fn run() -> Result<()> {
-    FORWARD.check_domain()?;
-    let listen_address: SocketAddr = CONFIG.listen_address.parse()?;
     block_on(async {
+        let listen_address: SocketAddr = CONFIG.listen_address.parse()?;
         let listener = Async::<TcpListener>::bind(listen_address)?;
+        let forward = Forward::new();
+        forward.check_domain()?;
+        let forward = Arc::new(forward);
         loop {
             let (stream, _) = listener.accept().await?;
             let stream = async_dup::Arc::new(stream);
+            let forward = forward.clone();
             let task = spawn(async move {
-                if let Err(err) = async_h1::accept(stream, serve).await {
+                let f = |req| async { forward.forward(req).await };
+                if let Err(err) = async_h1::accept(stream, f).await {
                     error!("Connection error: {:#?}", err);
                 }
             });
