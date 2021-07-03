@@ -22,8 +22,12 @@
                 xhr.setRequestHeader("Content-Type", "application/json");
                 xhr.onreadystatechange = function () {
                     if (xhr.readyState === 4) {
-                        console.log(xhr.status);
-                        console.log(xhr.responseText);
+                        var result = JSON.parse(xhr.responseText);
+                        if (result.success) {
+                            location.reload();
+                        } else {
+                            alert("login failed");
+                        }
                     }
                 };
                 var data = {username: username.value, password: password.value};
