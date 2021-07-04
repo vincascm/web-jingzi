@@ -7,12 +7,14 @@
     </head>
     <body>
         <br/><br/>
+        <div id="sign_in_box">
         username: <input id="username"></input> <br/>
         password: <input type="password" id="password"></input> <br/>
         <button id="submit">Sign in</button>
+        </div>
         <script>
             var submit = document.getElementById("submit");
-			submit.addEventListener("keyup", function(event) {
+			document.getElementById("sign_in_box").addEventListener("keyup", function(event) {
 				if (event.keyCode === 13) {
 					event.preventDefault();
 					submit.click();
@@ -21,8 +23,15 @@
             submit.onclick = function() {
                 var username = document.getElementById("username");
                 var password = document.getElementById("password");
+                username = username.value.trim();
+                password = password.value.trim();
 
-                var url = "/__wm__login";
+                if (username.length == 0 || password.length == 0) {
+                    alert("please input username and password");
+                    return;
+                }
+
+                var url = "/__wj__login";
                 var xhr = new XMLHttpRequest();
                 xhr.open("POST", url);
                 xhr.setRequestHeader("Content-Type", "application/json");
@@ -32,11 +41,11 @@
                         if (result.success) {
                             location.reload();
                         } else {
-                            alert("login failed");
+                            alert("sign in failed");
                         }
                     }
                 };
-                var data = {username: username.value, password: password.value};
+                var data = {username: username, password: password};
                 xhr.send(JSON.stringify(data));
             }
         </script>

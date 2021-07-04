@@ -7,10 +7,11 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use http_types::{headers::HeaderValue, Body, Cookie, Request, Response, StatusCode};
+use regex::Regex;
 use smol::{
     block_on,
     io::AsyncRead,
-    lock::Mutex,
+    lock::RwLock,
     net::{resolve, AsyncToSocketAddrs},
     spawn, Async,
 };
@@ -21,14 +22,28 @@ const COOKIE_NAME: &str = "__wj_token";
 
 #[derive(Debug)]
 struct Forward {
-    tokens: Mutex<HashSet<String>>,
+    replace_domain: Vec<(Regex, String)>,
+    restore_domain: Vec<(Regex, String)>,
+    tokens: RwLock<HashSet<String>>,
 }
 
 impl Forward {
-    fn new() -> Forward {
-        Forward {
-            tokens: Mutex::new(HashSet::new()),
+    fn new() -> Result<Forward> {
+        let mut replace_domain = Vec::new();
+        for (k, v) in &CONFIG.domain_name {
+            let i = (Regex::new(&v.replace('.', "\\."))?, k.to_string());
+            replace_domain.push(i);
         }
+        let mut restore_domain = Vec::new();
+        for (k, v) in &CONFIG.domain_name {
+            let i = (Regex::new(&k.replace('.', "\\."))?, v.to_string());
+            restore_domain.push(i);
+        }
+        Ok(Forward {
+            replace_domain,
+            restore_domain,
+            tokens: RwLock::new(HashSet::new()),
+        })
     }
 
     fn check_domain_list_in_domain<'a>(domain_list: &[&'a str], domain: &&str) -> Option<&'a str> {
@@ -47,14 +62,14 @@ impl Forward {
                     let domain_list: Vec<_> = domain_list.iter().map(|i| i.as_str()).collect();
                     if let Some(domain) = Self::check_domain_list_in_domain(&domain_list, &d) {
                         // login
-                        if req.url().path() == "/__wm__login" {
+                        if req.url().path() == "/__wj__login" {
                             if let Some(account_list) = &CONFIG.authorization.account {
                                 let account: Account = req.body_json().await?;
                                 if account_list.contains(&account) {
                                     use time::{Duration, OffsetDateTime};
                                     use uuid::Uuid;
                                     let token = Uuid::new_v4().to_string();
-                                    let mut tokens = self.tokens.lock().await;
+                                    let mut tokens = self.tokens.write().await;
                                     tokens.insert(token.clone());
                                     let mut expires = OffsetDateTime::now_utc();
                                     expires += Duration::days(3650);
@@ -71,6 +86,8 @@ impl Forward {
                                 } else {
                                     return Self::result(false);
                                 }
+                            } else {
+                                return Self::result(false);
                             }
                         // check authorization
                         } else {
@@ -90,7 +107,7 @@ impl Forward {
                             }
                             match token {
                                 Some(token) => {
-                                    let tokens = self.tokens.lock().await;
+                                    let tokens = self.tokens.read().await;
                                     if !tokens.contains(token) {
                                         return Self::show_login_page();
                                     }
@@ -112,7 +129,7 @@ impl Forward {
             .url()
             .query_pairs()
             .map(|(q, v)| {
-                let s = Self::restore_domain(v.into());
+                let s = self.replace_domain(v, false);
                 format!("{}={}", q, s)
             })
             .collect();
@@ -132,7 +149,7 @@ impl Forward {
             None => return Self::http_error("missing domain in request"),
         };
         let path = req.url().path();
-        let path = Self::restore_domain(path.into());
+        let path = self.replace_domain(path.into(), false);
         let url = req.url_mut();
         if !query.is_empty() {
             url.set_query(Some(&query));
@@ -144,11 +161,11 @@ impl Forward {
         }
         url.set_path(&path);
         if let Some(host) = url.host_str() {
-            let host = Self::restore_domain(host.into());
+            let host = self.replace_domain(host.into(), false);
             url.set_host(Some(&host))?;
             req.insert_header("host", host);
         }
-        Self::restore_header(&mut req);
+        self.restore_header(&mut req);
         if let Some(content_type) = req.content_type() {
             match content_type.essence() {
                 "text/html"
@@ -158,7 +175,7 @@ impl Forward {
                 | "application/manifest+json"
                 | "application/x-www-form-urlencoded" => match req.body_string().await {
                     Ok(body) => {
-                        let body = Self::restore_domain(body.into());
+                        let body = self.replace_domain(body.into(), false);
                         req.set_body(body);
                     }
                     Err(_) => error!("can not convert body to utf-8 string"),
@@ -197,7 +214,7 @@ impl Forward {
             s => return Self::http_error(&format!("unsupported scheme: {}", s)),
         };
 
-        Self::replace_header(&mut resp);
+        self.replace_header(&mut resp);
 
         if resp.status() == StatusCode::NotModified {
             return Ok(resp);
@@ -214,7 +231,7 @@ impl Forward {
                     Coder::De.code(&mut resp);
                     match resp.body_string().await {
                         Ok(body) => {
-                            let body = Self::replace_domain(body.into());
+                            let body = self.replace_domain(body.into(), true);
                             resp.set_body(body);
                         }
                         Err(_) => error!("can not convert body to utf-8 string"),
@@ -227,23 +244,21 @@ impl Forward {
         Ok(resp)
     }
 
-    fn replace_domain(s: Cow<str>) -> String {
-        let mut result = s.into_owned();
-        for (k, v) in &CONFIG.domain_name {
-            result = result.replace(v, k);
+    /// replace or restore domain
+    fn replace_domain(&self, text: Cow<str>, is_replace: bool) -> String {
+        let regex_domain = if is_replace {
+            &self.replace_domain
+        } else {
+            &self.restore_domain
+        };
+        let mut result = text.into_owned();
+        for (regex, rep) in regex_domain {
+            result = regex.replace_all(&result, rep).to_string();
         }
         result
     }
 
-    fn restore_domain(s: Cow<str>) -> String {
-        let mut result = s.into_owned();
-        for (k, v) in &CONFIG.domain_name {
-            result = result.replace(k, v);
-        }
-        result
-    }
-
-    fn replace_header(req: &mut Response) {
+    fn replace_header(&self, req: &mut Response) {
         const HEADERS: &[&str] = &[
             "location",
             "set-cookie",
@@ -254,18 +269,18 @@ impl Forward {
 
         for i in HEADERS {
             if let Some(h) = req.header(*i) {
-                let h = Self::replace_domain(h.as_str().into());
+                let h = self.replace_domain(h.as_str().into(), true);
                 req.insert_header(*i, h);
             }
         }
     }
 
-    fn restore_header(req: &mut Request) {
+    fn restore_header(&self, req: &mut Request) {
         const HEADERS: &[&str] = &["origin", "referer"];
 
         for i in HEADERS {
             if let Some(h) = req.header(*i) {
-                let h = Self::restore_domain(h.as_str().into());
+                let h = self.replace_domain(h.as_str().into(), false);
                 req.insert_header(*i, h);
             }
         }
@@ -352,7 +367,7 @@ pub fn run() -> Result<()> {
         CONFIG.check_domain()?;
         let listen_address: SocketAddr = CONFIG.listen_address.parse()?;
         let listener = Async::<TcpListener>::bind(listen_address)?;
-        let forward = Forward::new();
+        let forward = Forward::new()?;
         let forward = Arc::new(forward);
         loop {
             let (stream, _) = listener.accept().await?;
