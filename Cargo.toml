@@ -13,11 +13,11 @@ async-io = "1.6.0"
 async-dup = "1.2.2"
 env_logger = "0.8.4"
 log = "0.4.14"
-async-std = "1.9.0"
 async-native-tls = "0.3.3"
 async-h1 = "2.3.2"
 time = "0.2.27"
 regex = "1.5.4"
+http-types = "2.11.1"
 
 [dependencies.socks5]
 version = "0.2.2"
@@ -26,9 +26,6 @@ git = "https://github.com/vincascm/socks5.git"
 [dependencies.uuid]
 version = "0.8.2"
 features = ["v4"]
-
-[dependencies.http-types]
-version = "2.11.1"
 
 [dependencies.serde]
 version = "1.0.126"

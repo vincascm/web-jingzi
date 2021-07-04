@@ -10,7 +10,7 @@ use http_types::{headers::HeaderValue, Body, Cookie, Request, Response, StatusCo
 use regex::Regex;
 use smol::{
     block_on,
-    io::AsyncRead,
+    io::{AsyncRead, BufReader},
     lock::RwLock,
     net::{resolve, AsyncToSocketAddrs},
     spawn, Async,
@@ -332,7 +332,7 @@ impl Coder {
     where
         T: AsyncRead + Unpin + Send + Sync + 'static,
     {
-        let coder = async_std::io::BufReader::new(coder);
+        let coder = BufReader::new(coder);
         let body = Body::from_reader(coder, None);
         resp.set_body(body);
     }
