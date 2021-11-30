@@ -4,13 +4,38 @@
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no" />
         <title>Sign in</title>
+        <style type="text/css">
+            body {
+                text-align: center;
+            }
+
+            #sign_in_box {
+                margin:0 auto;
+            }
+
+            .input {
+                margin: 6px 6px 0 0;
+                caret-color: #2e3033;
+                border: 1px solid #dfe4ef;
+                color: #333;
+            }
+
+            .submit {
+                margin: 6px 0 0 0;
+                border: none;
+                background: #5c95fe;
+                box-shadow: 12px 12px 25px 4px rgb(177 188 199 / 10%);
+                color: #fff;
+            }
+
+        </style>
     </head>
     <body>
         <br/><br/>
         <div id="sign_in_box">
-        username: <input id="username"></input> <br/>
-        password: <input type="password" id="password"></input> <br/>
-        <button id="submit">Sign in</button>
+        user name: <input id="username" class="input"></input> <br/>
+        password: <input type="password" id="password" class="input"></input> <br/>
+        <button id="submit" class="submit">sign in</button>
         </div>
         <script>
             var submit = document.getElementById("submit");
