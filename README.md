@@ -4,27 +4,7 @@ mirror of website with domain name substitution
 
 ## config file:
 
-```yaml
-listen_address: 127.0.0.1:3003
-# optional, if set, will forward all connect to this proxy
-# socks5_server: 127.0.0.1:1080
-domain_name:
-  x.com: www.google.com
-  y.com: wikipedia.org
-# request to corresponding url, like http://x.com -> http://www.google.com, will replace http://www.google.com to https://www.google.com
-use_https:
-  - x.com
-  - y.com
-authorization:
-  enabled: true
-  domain_list:
-    - x.com
-    - y.com
-  account:
-    -
-      username: tony
-      password: 123
-```
+please check [this file](config.toml)
 
 ## install and run:
 
@@ -65,4 +45,5 @@ web-jingzi [full path config file]
 ## website test result
 
 1. [x] [**ok**] www.google.com
-1. [x] [**ok**] www.wikipedia.org zh.wikipedia.org
+1. [x] [**ok**] www.wikipedia.org
+1. [x] [**ok**] zh.wikipedia.org
