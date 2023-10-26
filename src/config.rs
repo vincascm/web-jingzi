@@ -1,7 +1,10 @@
 use std::{collections::HashMap, fs::File};
 
 use anyhow::Result;
+use once_cell::sync::Lazy;
 use serde::Deserialize;
+
+pub static CONFIG: Lazy<Config> = Lazy::new(|| Config::from_env().unwrap());
 
 #[derive(Deserialize, Debug)]
 pub struct Config {
@@ -16,7 +19,8 @@ impl Config {
     pub fn from_env() -> Result<Config> {
         let file = std::env::var("CONFIG_FILE")?;
         let file = File::open(&file)?;
-        let config = serde_yaml::from_reader(file)?;
+        let config = std::io::read_to_string(file)?;
+        let config = toml::from_str(&config)?;
         Ok(config)
     }
 

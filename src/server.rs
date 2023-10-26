@@ -6,19 +6,19 @@ use std::{
 };
 
 use anyhow::{anyhow, Result};
+use async_executor::Executor;
+use async_io::{block_on, Async};
+use async_lock::RwLock;
+use async_net::{resolve, AsyncToSocketAddrs};
+use futures_lite::io::{AsyncRead, BufReader};
 use http_types::{headers::HeaderValue, Body, Cookie, Request, Response, StatusCode};
 use regex::Regex;
-use smol::{
-    block_on,
-    io::{AsyncRead, BufReader},
-    lock::RwLock,
-    net::{resolve, AsyncToSocketAddrs},
-    spawn, Async,
-};
+use tracing::{error, trace};
 
-use crate::{config::Account, constants::CONFIG};
+use crate::config::{Account, CONFIG};
 
 const COOKIE_NAME: &str = "__wj_token";
+const LOGIN_URL_PATH: &str = "/__wj__login";
 
 #[derive(Debug)]
 struct Forward {
@@ -62,7 +62,7 @@ impl Forward {
                     let domain_list: Vec<_> = domain_list.iter().map(|i| i.as_str()).collect();
                     if let Some(domain) = Self::check_domain_list_in_domain(&domain_list, &d) {
                         // login
-                        if req.url().path() == "/__wj__login" {
+                        if req.url().path() == LOGIN_URL_PATH {
                             if let Some(account_list) = &CONFIG.authorization.account {
                                 let account: Account = req.body_json().await?;
                                 if account_list.contains(&account) {
@@ -196,7 +196,9 @@ impl Forward {
             Some(server) => {
                 let server = Self::resolve(server).await?;
                 trace!("socks5 dest: host: {}, port: {}", &host, port);
-                socks5::connect_without_auth(server, (host.to_string(), port).into()).await?
+                let mut stream = Async::<TcpStream>::connect(server).await?;
+                socks5::connect_without_auth(&mut stream, (host.to_string(), port).into()).await?;
+                stream
             }
             None => {
                 let addr = format!("{}:{}", host, port);
@@ -363,7 +365,8 @@ impl Coder {
 }
 
 pub fn run() -> Result<()> {
-    block_on(async {
+    let executor = Executor::new();
+    block_on(executor.run(async {
         CONFIG.check_domain()?;
         let listen_address: SocketAddr = CONFIG.listen_address.parse()?;
         let listener = Async::<TcpListener>::bind(listen_address)?;
@@ -371,15 +374,17 @@ pub fn run() -> Result<()> {
         let forward = Arc::new(forward);
         loop {
             let (stream, _) = listener.accept().await?;
-            let stream = async_dup::Arc::new(stream);
             let forward = forward.clone();
-            let task = spawn(async move {
-                let f = |req| async { forward.forward(req).await };
-                if let Err(err) = async_h1::accept(stream, f).await {
+            let task = executor.spawn(async move {
+                if let Err(err) = async_h1::accept(async_dup::Arc::new(stream), |req| async {
+                    forward.forward(req).await
+                })
+                .await
+                {
                     error!("Connection error: {:#?}", err);
                 }
             });
-            task.detach();
+            task.await;
         }
-    })
+    }))
 }

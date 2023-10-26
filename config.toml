@@ -1,0 +1,14 @@
+listen_address = "127.0.0.1:3003"
+# optional, if set, will forward all connect to this proxy
+# socks5_server = "127.0.0.1:1080"
+# request to corresponding url, like http://x.com -> http://www.google.com, will replace http://www.google.com to https://www.google.com
+use_https = [ "x.com",  "y.com" ]
+[domain_name]
+  "x.com" = "www.google.com"
+  "y.com" = "wikipedia.org"
+[authorization]
+  enabled = true
+  domain_list = [ "x.com", "y.com" ]
+  [[account]]
+      username = "tony"
+      password = "123"
