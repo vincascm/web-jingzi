@@ -197,7 +197,7 @@ impl Forward {
                 let server = Self::resolve(server).await?;
                 trace!("socks5 dest: host: {}, port: {}", &host, port);
                 let mut stream = Async::<TcpStream>::connect(server).await?;
-                socks5::connect_without_auth(&mut stream, (host.to_string(), port).into()).await?;
+                socks5::connect_without_auth(&mut stream, (host.as_bytes(), port).into()).await?;
                 stream
             }
             None => {
@@ -370,21 +370,21 @@ pub fn run() -> Result<()> {
         CONFIG.check_domain()?;
         let listen_address: SocketAddr = CONFIG.listen_address.parse()?;
         let listener = Async::<TcpListener>::bind(listen_address)?;
-        let forward = Forward::new()?;
-        let forward = Arc::new(forward);
+        let forward = Arc::new(Forward::new()?);
         loop {
             let (stream, _) = listener.accept().await?;
             let forward = forward.clone();
-            let task = executor.spawn(async move {
-                if let Err(err) = async_h1::accept(async_dup::Arc::new(stream), |req| async {
-                    forward.forward(req).await
+            executor
+                .spawn(async move {
+                    if let Err(err) = async_h1::accept(async_dup::Arc::new(stream), |req| async {
+                        forward.forward(req).await
+                    })
+                    .await
+                    {
+                        error!("Connection error: {:#?}", err);
+                    }
                 })
-                .await
-                {
-                    error!("Connection error: {:#?}", err);
-                }
-            });
-            task.await;
+                .detach();
         }
     }))
 }
