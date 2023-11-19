@@ -13,7 +13,7 @@ use async_net::{resolve, AsyncToSocketAddrs};
 use futures_lite::io::{AsyncRead, BufReader};
 use http_types::{headers::HeaderValue, Body, Cookie, Request, Response, StatusCode};
 use regex::Regex;
-use tracing::{error, trace};
+use tracing::error;
 
 use crate::config::{Account, CONFIG};
 
@@ -46,13 +46,11 @@ impl Forward {
         })
     }
 
-    fn check_domain_list_in_domain<'a>(domain_list: &[&'a str], domain: &&str) -> Option<&'a str> {
-        for i in domain_list {
-            if domain.contains(i) {
-                return Some(i);
-            }
-        }
-        None
+    fn check_domain_list_in_domain<'a>(
+        domain_list: &'a [&'a str],
+        domain: &str,
+    ) -> Option<&'a &'a str> {
+        domain_list.iter().find(|&i| domain.contains(i))
     }
 
     async fn forward(&self, mut req: Request) -> http_types::Result<Response> {
@@ -60,7 +58,7 @@ impl Forward {
             if let Some(domain_list) = &CONFIG.authorization.domain_list {
                 if let Some(d) = req.url().domain() {
                     let domain_list: Vec<_> = domain_list.iter().map(|i| i.as_str()).collect();
-                    if let Some(domain) = Self::check_domain_list_in_domain(&domain_list, &d) {
+                    if let Some(domain) = Self::check_domain_list_in_domain(&domain_list, d) {
                         // login
                         if req.url().path() == LOGIN_URL_PATH {
                             if let Some(account_list) = &CONFIG.authorization.account {
@@ -74,7 +72,7 @@ impl Forward {
                                     let mut expires = OffsetDateTime::now_utc();
                                     expires += Duration::days(3650);
                                     let cookie = Cookie::build(COOKIE_NAME, &token)
-                                        .domain(domain)
+                                        .domain(*domain)
                                         .expires(expires)
                                         .secure(true)
                                         .http_only(true)
@@ -95,16 +93,16 @@ impl Forward {
                                 Some(c) => c,
                                 None => return Self::show_login_page(),
                             };
-                            let mut token = None;
-                            'outer: for i in cookies_header {
-                                for item in i.as_str().split("; ") {
-                                    let cookie: Vec<_> = item.split('=').collect();
-                                    if cookie.len() == 2 && cookie[0] == COOKIE_NAME {
-                                        token = Some(cookie[1]);
-                                        break 'outer;
+                            let token = cookies_header.iter().find_map(|cookie| {
+                                cookie.as_str().split("; ").find_map(|item| {
+                                    let values: Vec<_> = item.split('=').collect();
+                                    if values.len() == 2 && values[0] == COOKIE_NAME {
+                                        Some(values[1])
+                                    } else {
+                                        None
                                     }
-                                }
-                            }
+                                })
+                            });
                             match token {
                                 Some(token) => {
                                     let tokens = self.tokens.read().await;
@@ -192,24 +190,11 @@ impl Forward {
             Some(port) => port,
             None => return Self::http_error("invalid request"),
         };
-        let stream = match &CONFIG.socks5_server {
-            Some(server) => {
-                let server = Self::resolve(server).await?;
-                trace!("socks5 dest: host: {}, port: {}", &host, port);
-                let mut stream = Async::<TcpStream>::connect(server).await?;
-                socks5::connect_without_auth(&mut stream, (host.as_bytes(), port).into()).await?;
-                stream
-            }
-            None => {
-                let addr = format!("{}:{}", host, port);
-                let addr = Self::resolve(addr).await?;
-                Async::<TcpStream>::connect(addr).await?
-            }
-        };
+        let stream = Async::<TcpStream>::connect(Self::resolve((host, port)).await?).await?;
 
         let mut resp = match req.url().scheme() {
             "https" => {
-                let stream = async_native_tls::connect(host, stream).await?;
+                let stream = async_native_tls::connect(req.url(), stream).await?;
                 async_h1::connect(stream, req).await?
             }
             "http" => async_h1::connect(stream, req).await?,
@@ -239,6 +224,7 @@ impl Forward {
                         Err(_) => error!("can not convert body to utf-8 string"),
                     }
                     Coder::En.code(&mut resp);
+                    resp.remove_header("transfer-encoding");
                 }
                 _ => (),
             }

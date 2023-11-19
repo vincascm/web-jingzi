@@ -9,7 +9,6 @@ pub static CONFIG: Lazy<Config> = Lazy::new(|| Config::from_env().unwrap());
 #[derive(Deserialize, Debug)]
 pub struct Config {
     pub listen_address: String,
-    pub socks5_server: Option<String>,
     pub domain_name: HashMap<String, String>,
     pub use_https: Option<Vec<String>>,
     pub authorization: Authorization,
@@ -18,7 +17,7 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Result<Config> {
         let file = std::env::var("CONFIG_FILE")?;
-        let file = File::open(&file)?;
+        let file = File::open(file)?;
         let config = std::io::read_to_string(file)?;
         let config = toml::from_str(&config)?;
         Ok(config)
