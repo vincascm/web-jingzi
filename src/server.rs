@@ -11,7 +11,10 @@ use async_io::{block_on, Async};
 use async_lock::RwLock;
 use async_net::{resolve, AsyncToSocketAddrs};
 use futures_lite::io::{AsyncRead, BufReader};
-use http_types::{headers::HeaderValue, Body, Cookie, Request, Response, StatusCode};
+use http_types::{
+    headers::{HeaderValue, CONTENT_LENGTH},
+    Body, Cookie, Request, Response, StatusCode,
+};
 use regex::Regex;
 use tracing::error;
 
@@ -224,7 +227,6 @@ impl Forward {
                         Err(_) => error!("can not convert body to utf-8 string"),
                     }
                     Coder::En.code(&mut resp);
-                    resp.remove_header("transfer-encoding");
                 }
                 _ => (),
             }
@@ -306,6 +308,7 @@ impl Forward {
 macro_rules! set_code {
     ($response: ident, $coder: ident) => {{
         let body = $response.take_body();
+        $response.remove_header(CONTENT_LENGTH);
         Self::set_body($response, $coder::new(body))
     }};
 }
