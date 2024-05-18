@@ -1,20 +1,20 @@
 use std::{
     borrow::Cow,
-    collections::HashSet,
     net::{SocketAddr, TcpListener, TcpStream},
+    path::Path,
     sync::Arc,
 };
 
 use anyhow::{anyhow, Result};
 use async_executor::Executor;
 use async_io::{block_on, Async};
-use async_lock::RwLock;
 use async_net::{resolve, AsyncToSocketAddrs};
 use futures_lite::io::{AsyncRead, BufReader};
 use http_types::{
     headers::{HeaderValue, CONTENT_LENGTH},
     Body, Cookie, Request, Response, StatusCode,
 };
+use redb::{Database, ReadableTable, TableDefinition};
 use regex::Regex;
 use tracing::error;
 
@@ -22,12 +22,13 @@ use crate::config::{Account, CONFIG};
 
 const COOKIE_NAME: &str = "__wj_token";
 const LOGIN_URL_PATH: &str = "/__wj__login";
+const TOKENS: TableDefinition<String, ()> = TableDefinition::new("tokens");
 
 #[derive(Debug)]
 struct Forward {
     replace_domain: Vec<(Regex, String)>,
     restore_domain: Vec<(Regex, String)>,
-    tokens: RwLock<HashSet<String>>,
+    db: Database,
 }
 
 impl Forward {
@@ -42,10 +43,14 @@ impl Forward {
             let i = (Regex::new(&k.replace('.', "\\."))?, v.to_string());
             restore_domain.push(i);
         }
+
+        let db_filename = Path::new(&CONFIG.data_dir).join("db.redb");
+        let db = Database::create(db_filename)?;
+
         Ok(Forward {
             replace_domain,
             restore_domain,
-            tokens: RwLock::new(HashSet::new()),
+            db,
         })
     }
 
@@ -68,10 +73,17 @@ impl Forward {
                                 let account: Account = req.body_json().await?;
                                 if account_list.contains(&account) {
                                     use time::{Duration, OffsetDateTime};
+
                                     use uuid::Uuid;
                                     let token = Uuid::new_v4().to_string();
-                                    let mut tokens = self.tokens.write().await;
-                                    tokens.insert(token.clone());
+
+                                    let write_txn = self.db.begin_write()?;
+                                    {
+                                        let mut table = write_txn.open_table(TOKENS)?;
+                                        table.insert(token.clone(), ())?;
+                                    }
+                                    write_txn.commit()?;
+
                                     let mut expires = OffsetDateTime::now_utc();
                                     expires += Duration::days(3650);
                                     let cookie = Cookie::build(COOKIE_NAME, &token)
@@ -108,8 +120,13 @@ impl Forward {
                             });
                             match token {
                                 Some(token) => {
-                                    let tokens = self.tokens.read().await;
-                                    if !tokens.contains(token) {
+                                    let read_txn = self.db.begin_read()?;
+                                    let table = read_txn.open_table(TOKENS)?;
+                                    let result = table.iter()?.find_map(|item| {
+                                        item.ok()
+                                            .and_then(|(k, _)| (k.value() == token).then(|| ()))
+                                    });
+                                    if result.is_none() {
                                         return Self::show_login_page();
                                     }
                                 }

@@ -11,6 +11,7 @@ pub struct Config {
     pub listen_address: String,
     pub domain_name: HashMap<String, String>,
     pub use_https: Option<Vec<String>>,
+    pub data_dir: String,
     pub authorization: Authorization,
 }
 
