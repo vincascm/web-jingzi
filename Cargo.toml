@@ -1,36 +1,36 @@
 [package]
 name = "web-jingzi"
-version = "0.4.2"
+version = "0.4.3"
 authors = ["vinoca <vinoca@vinoca.org>"]
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-anyhow = "1.0.88"
-async-io = "2.3.4"
+anyhow = "1.0.98"
+async-io = "2.4.0"
 async-dup = "1.2.4"
-async-executor = "1.13.1"
+async-executor = "1.13.2"
 async-h1 = "2.3.4"
 async-lock = "3.4.0"
 async-native-tls = { version = "0.5.0", features = [ "vendored" ] }
 async-net = "2.0.0"
-futures-lite = "2.3.0"
+futures-lite = "2.6.0"
 http-types = "2.12.0"
-regex = "1.10.6"
+regex = "1.11.1"
 time = "0.2.27"
-toml = "0.8.19"
-tracing = "0.1.40"
-tracing-subscriber = "0.3.18"
-env_logger = "0.11.5"
-redb = "2.1.2"
+toml = "0.8.22"
+tracing = "0.1.41"
+tracing-subscriber = "0.3.19"
+env_logger = "0.11.8"
+redb = "2.5.0"
 
 [dependencies.uuid]
-version = "1.10.0"
+version = "1.16.0"
 features = ["v4"]
 
 [dependencies.serde]
-version = "1.0.210"
+version = "1.0.219"
 features = ["derive"]
 
 [dependencies.async-compression]
-version = "0.4.12"
+version = "0.4.23"
 features = ["brotli", "deflate", "gzip", "futures-io"]

@@ -5,16 +5,16 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_executor::Executor;
-use async_io::{block_on, Async};
-use async_net::{resolve, AsyncToSocketAddrs};
+use async_io::{Async, block_on};
+use async_net::{AsyncToSocketAddrs, resolve};
 use futures_lite::io::{AsyncRead, BufReader};
 use http_types::{
-    headers::{HeaderValue, CONTENT_LENGTH},
     Body, Cookie, Request, Response, StatusCode,
+    headers::{CONTENT_LENGTH, HeaderValue},
 };
-use redb::{Database, TableDefinition};
+use redb::{Database, TableDefinition, TableHandle};
 use regex::Regex;
 use tracing::error;
 
@@ -22,7 +22,7 @@ use crate::config::{Account, CONFIG};
 
 const COOKIE_NAME: &str = "__wj_token";
 const LOGIN_URL_PATH: &str = "/__wj__login";
-const TOKENS: TableDefinition<String, ()> = TableDefinition::new("tokens");
+const TOKENS: TableDefinition<&str, ()> = TableDefinition::new("tokens");
 
 #[derive(Debug)]
 struct Forward {
@@ -194,7 +194,7 @@ impl Forward {
                 let write_txn = self.db.begin_write()?;
                 {
                     let mut table = write_txn.open_table(TOKENS)?;
-                    table.insert(token.clone(), ())?;
+                    table.insert(token.as_str(), ())?;
                 }
                 write_txn.commit()?;
 
@@ -238,8 +238,16 @@ impl Forward {
         Ok(match token {
             Some(token) => {
                 let read_txn = self.db.begin_read()?;
-                let table = read_txn.open_table(TOKENS)?;
-                table.get(token.to_string())?.is_some()
+                if read_txn
+                    .list_tables()?
+                    .into_iter()
+                    .any(|i| i.name() == TOKENS.name())
+                {
+                    let table = read_txn.open_table(TOKENS)?;
+                    table.get(token)?.is_some()
+                } else {
+                    false
+                }
             }
             None => false,
         })
