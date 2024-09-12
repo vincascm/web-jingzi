@@ -14,7 +14,7 @@ use http_types::{
     headers::{HeaderValue, CONTENT_LENGTH},
     Body, Cookie, Request, Response, StatusCode,
 };
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{Database, TableDefinition};
 use regex::Regex;
 use tracing::error;
 
@@ -54,84 +54,15 @@ impl Forward {
         })
     }
 
-    fn check_domain_list_in_domain<'a>(
-        domain_list: &'a [&'a str],
-        domain: &str,
-    ) -> Option<&'a &'a str> {
-        domain_list.iter().find(|&i| domain.contains(i))
-    }
-
     async fn forward(&self, mut req: Request) -> http_types::Result<Response> {
         if CONFIG.authorization.enabled {
             if let Some(domain_list) = &CONFIG.authorization.domain_list {
                 if let Some(d) = req.url().domain() {
-                    let domain_list: Vec<_> = domain_list.iter().map(|i| i.as_str()).collect();
-                    if let Some(domain) = Self::check_domain_list_in_domain(&domain_list, d) {
-                        // login
+                    if let Some(domain) = domain_list.iter().find(|&i| d.contains(i)) {
                         if req.url().path() == LOGIN_URL_PATH {
-                            if let Some(account_list) = &CONFIG.authorization.account {
-                                let account: Account = req.body_json().await?;
-                                if account_list.contains(&account) {
-                                    use time::{Duration, OffsetDateTime};
-
-                                    use uuid::Uuid;
-                                    let token = Uuid::new_v4().to_string();
-
-                                    let write_txn = self.db.begin_write()?;
-                                    {
-                                        let mut table = write_txn.open_table(TOKENS)?;
-                                        table.insert(token.clone(), ())?;
-                                    }
-                                    write_txn.commit()?;
-
-                                    let mut expires = OffsetDateTime::now_utc();
-                                    expires += Duration::days(3650);
-                                    let cookie = Cookie::build(COOKIE_NAME, &token)
-                                        .domain(*domain)
-                                        .expires(expires)
-                                        .secure(true)
-                                        .http_only(true)
-                                        .finish();
-                                    let cookie: HeaderValue = cookie.into();
-                                    let mut resp = Self::result(true)?;
-                                    resp.append_header("Set-Cookie", cookie);
-                                    return Ok(resp);
-                                } else {
-                                    return Self::result(false);
-                                }
-                            } else {
-                                return Self::result(false);
-                            }
-                        // check authorization
-                        } else {
-                            let cookies_header = match req.header("Cookie") {
-                                Some(c) => c,
-                                None => return Self::show_login_page(),
-                            };
-                            let token = cookies_header.iter().find_map(|cookie| {
-                                cookie.as_str().split("; ").find_map(|item| {
-                                    let values: Vec<_> = item.split('=').collect();
-                                    if values.len() == 2 && values[0] == COOKIE_NAME {
-                                        Some(values[1])
-                                    } else {
-                                        None
-                                    }
-                                })
-                            });
-                            match token {
-                                Some(token) => {
-                                    let read_txn = self.db.begin_read()?;
-                                    let table = read_txn.open_table(TOKENS)?;
-                                    let result = table.iter()?.find_map(|item| {
-                                        item.ok()
-                                            .and_then(|(k, _)| (k.value() == token).then(|| ()))
-                                    });
-                                    if result.is_none() {
-                                        return Self::show_login_page();
-                                    }
-                                }
-                                None => return Self::show_login_page(),
-                            }
+                            return self.login(req, domain).await;
+                        } else if !self.authorization(&req)? {
+                            return Self::show_login_page();
                         }
                     }
                 }
@@ -249,6 +180,69 @@ impl Forward {
             }
         }
         Ok(resp)
+    }
+
+    async fn login(&self, mut req: Request, domain: &str) -> http_types::Result<Response> {
+        if let Some(account_list) = &CONFIG.authorization.account {
+            let account: Account = req.body_json().await?;
+            if account_list.contains(&account) {
+                use time::{Duration, OffsetDateTime};
+
+                use uuid::Uuid;
+                let token = Uuid::new_v4().to_string();
+
+                let write_txn = self.db.begin_write()?;
+                {
+                    let mut table = write_txn.open_table(TOKENS)?;
+                    table.insert(token.clone(), ())?;
+                }
+                write_txn.commit()?;
+
+                let mut expires = OffsetDateTime::now_utc();
+                expires += Duration::days(3650);
+                let cookie = Cookie::build(COOKIE_NAME, &token)
+                    .domain(domain)
+                    .expires(expires)
+                    .secure(true)
+                    .http_only(true)
+                    .finish();
+                let cookie: HeaderValue = cookie.into();
+                let mut resp = Self::result(true)?;
+                resp.append_header("Set-Cookie", cookie);
+                Ok(resp)
+            } else {
+                Self::result(false)
+            }
+        } else {
+            Self::result(false)
+        }
+    }
+
+    fn authorization(&self, req: &Request) -> Result<bool> {
+        let cookies_header = match req.header("Cookie") {
+            Some(c) => c,
+            None => return Ok(false),
+        };
+
+        let token = cookies_header.iter().find_map(|cookie| {
+            cookie.as_str().split("; ").find_map(|item| {
+                let values: Vec<_> = item.split('=').collect();
+                if values.len() == 2 && values[0] == COOKIE_NAME {
+                    Some(values[1])
+                } else {
+                    None
+                }
+            })
+        });
+
+        Ok(match token {
+            Some(token) => {
+                let read_txn = self.db.begin_read()?;
+                let table = read_txn.open_table(TOKENS)?;
+                table.get(token.to_string())?.is_some()
+            }
+            None => false,
+        })
     }
 
     /// replace or restore domain

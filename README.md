@@ -8,7 +8,7 @@ please check [this file](config.toml)
 
 ## install and run:
 
-download binary file from release page [release page](https://github.com/vincascm/web-jingzi/releases)
+download binary file from [release page](https://github.com/vincascm/web-jingzi/releases)
 
 and run it:
 
@@ -44,6 +44,6 @@ web-jingzi [full path config file]
 
 ## website test result
 
-1. [x] [**ok**] www.google.com
-1. [x] [**ok**] www.wikipedia.org
-1. [x] [**ok**] zh.wikipedia.org
+1. [x] [**ok**] <https://www.google.com>
+1. [x] [**ok**] <https://www.wikipedia.org>
+1. [x] [**ok**] <https://zh.wikipedia.org>

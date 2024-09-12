@@ -1,10 +1,9 @@
-use std::{collections::HashMap, fs::File};
+use std::{collections::HashMap, fs::File, sync::LazyLock};
 
 use anyhow::Result;
-use once_cell::sync::Lazy;
 use serde::Deserialize;
 
-pub static CONFIG: Lazy<Config> = Lazy::new(|| Config::from_env().unwrap());
+pub static CONFIG: LazyLock<Config> = LazyLock::new(|| Config::from_env().unwrap());
 
 #[derive(Deserialize, Debug)]
 pub struct Config {
